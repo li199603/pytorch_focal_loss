@@ -9,29 +9,33 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
         self.alpha = alpha  # [C,]
 
-    def forward(self, pred_logit: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
-        # pred_logit [B, C]  or  [B, C, X1, X2, ...]
-        # label [B, ]  or  [B, X1, X2, ...]
-        B, C = pred_logit.shape[:2]  # batch size and number of categories
-        if pred_logit.dim() > 2:
-            # e.g. pred_logit.shape is [B, C, X1, X2]   
-            pred_logit = pred_logit.reshape(B, C, -1)  # [B, C, H, W] => [B, C, H*W]
-            pred_logit = pred_logit.transpose(1, 2)    # [B, C, H*W] => [B, H*W, C]
-            pred_logit = pred_logit.reshape(-1, C)   # [B, H*W, C] => [B*H*W, C]   set N = B*H*W
-        label = label.reshape(-1)  # [N, ]
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return focal_loss(input, target, self.gamma, self.alpha)
 
-        logpt = torch.log_softmax(pred_logit, dim=-1)  # [N, C]
-        logpt = logpt.gather(1, label[:, None]).squeeze()  # [N,]
-        pt = torch.exp(logpt)  # [N,]
-        
-        if self.alpha is not None:
-            alpha = self.alpha
-        else:
-            alpha = torch.ones((C,), dtype=torch.float, device=pred_logit.device)
-        alpha = alpha.gather(0, label)  # [N,]
-        
-        loss = -1 * alpha * torch.pow(1 - pt, self.gamma) * logpt
-        return loss.sum() / alpha.sum()
+def focal_loss(pred_logit: torch.Tensor,
+               label: torch.Tensor,
+               gamma: float,
+               alpha: Optional[torch.Tensor] = None) -> torch.Tensor:
+    # pred_logit [B, C]  or  [B, C, X1, X2, ...]
+    # label [B, ]  or  [B, X1, X2, ...]
+    B, C = pred_logit.shape[:2]  # batch size and number of categories
+    if pred_logit.dim() > 2:
+        # e.g. pred_logit.shape is [B, C, X1, X2]   
+        pred_logit = pred_logit.reshape(B, C, -1)  # [B, C, X1, X2] => [B, C, X1*X2]
+        pred_logit = pred_logit.transpose(1, 2)    # [B, C, X1*X2] => [B, X1*X2, C]
+        pred_logit = pred_logit.reshape(-1, C)   # [B, X1*X2, C] => [B*X1*X2, C]   set N = B*X1*X2
+    label = label.reshape(-1)  # [N, ]
+
+    log_p = torch.log_softmax(pred_logit, dim=-1)  # [N, C]
+    log_p = log_p.gather(1, label[:, None]).squeeze()  # [N,]
+    p = torch.exp(log_p)  # [N,]
+    
+    if alpha is None:
+        alpha = torch.ones((C,), dtype=torch.float, device=pred_logit.device)
+    alpha = alpha.gather(0, label)  # [N,]
+    
+    loss = -1 * alpha * torch.pow(1 - p, gamma) * log_p
+    return loss.sum() / alpha.sum()
 
 
 if __name__ == "__main__":
@@ -48,8 +52,7 @@ if __name__ == "__main__":
     alpha = np.abs(np.random.randn(C))
     alpha = torch.tensor(alpha, dtype=torch.float)
     
-    focal_loss = FocalLoss(gamma=0.0, alpha=alpha)
-    loss1 = focal_loss(pred_logit1, label)
+    loss1 = FocalLoss(gamma=0.0, alpha=alpha)(pred_logit1, label)
     loss1.backward()
     
     loss2 = F.cross_entropy(pred_logit2, label, weight=alpha)
